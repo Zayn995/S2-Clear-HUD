@@ -1,0 +1,28 @@
+S2 Clear HUD 0.1.0 - S.T.A.L.K.E.R. 2 version 2.0.5
+
+Free, unofficial HUD texture mod by Zayn995.
+Requires the original game. Separate from S2Tweaker.
+
+INSTALL
+1. Close the game.
+2. Remove older HUD-background mods first, including the three
+   z_RemoveAllHUDBG_P files if present.
+3. Copy all three files from this ZIP into Stalker2\Content\Paks\~mods\:
+   zzz_S2ClearHUD_P.pak
+   zzz_S2ClearHUD_P.utoc
+   zzz_S2ClearHUD_P.ucas
+
+Always replace the full triplet together. To uninstall, remove those files.
+Other mods replacing the same textures can conflict.
+
+33 HUD background textures are replaced with independently generated pixels.
+The active additional slot keeps a newly generated slim amber selection marker.
+No other mod is required. No gameplay configuration changes are included.
+
+Container, paths, exact read-back exports, transparency and the generated
+selection marker were checked. NOT PLAY-TESTED: startup and rendering in the
+actual game remain unconfirmed.
+
+This is fan-created content, not an official GSC Game World product.
+S.T.A.L.K.E.R. 2 and its original asset metadata belong to GSC Game World.
+For free use with the original game under https://www.gsc-game.com/guidelines/
