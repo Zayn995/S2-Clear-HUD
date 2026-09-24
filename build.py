@@ -13,9 +13,15 @@ import zipfile
 
 from PIL import Image
 
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 BASE = 'zzz_S2ClearHUD_P'
 ACTIVE = 'T_itemselector_additional_bg_active'
+CLEAR = (0, 0, 0, 0)
+# Backgrounds replaced by a generated translucent plate instead of being removed.
+# The game draws the ammo readout in a dark colour that relied on this panel for
+# contrast, so clearing it left the count hard to read against a dark scene.
+# Override while comparing builds with --plate TEXTURE=R,G,B,A.
+PLATES = {'T_Ammo_Back_Full': (216, 214, 206, 120)}
 ROOT = Path(__file__).resolve().parent
 
 
@@ -38,13 +44,45 @@ def texture_info(raw):
     return fmt.group()[:-1].decode(), w, h, fmt.end()
 
 
-def transparent_pixels(fmt, w, h):
+def bc7_mode6(colour):
+    """One BC7 block whose every pixel decodes to colour.
+
+    Mode 6 stores each endpoint as 7 bits per channel plus one shared low bit,
+    so a colour needs the same low bit in R, G, B and A. All indices select
+    endpoint 0, which makes the whole block that one colour."""
+    require(len({channel & 1 for channel in colour}) == 1,
+            f'A plate colour needs one shared low bit across R, G, B and A: {colour}')
+    bits = []
+
+    def put(value, width):
+        bits.extend((value >> index) & 1 for index in range(width))
+
+    put(1 << 6, 7)                       # Mode 6: six zero bits then a one.
+    for channel in colour:               # R0 R1 G0 G1 B0 B1 A0 A1, 7 bits each.
+        put(channel >> 1, 7)
+        put(channel >> 1, 7)
+    put(colour[0] & 1, 1)                # P0, restoring the low bit of endpoint 0.
+    put(colour[0] & 1, 1)                # P1, for endpoint 1.
+    put(0, 63)                           # A 3-bit first index, then fifteen 4-bit ones.
+    require(len(bits) == 128, 'A BC7 block must be 128 bits.')
+    block = bytearray(16)
+    for index, bit in enumerate(bits):
+        if bit:
+            block[index // 8] |= 1 << (index % 8)
+    return bytes(block)
+
+
+def uniform_pixels(fmt, w, h, colour):
+    """Generate a payload of one colour; CLEAR removes the background entirely."""
     if fmt == 'PF_B8G8R8A8':
-        return b'\0' * (w * h * 4)
+        red, green, blue, alpha = colour
+        return bytes((blue, green, red, alpha)) * (w * h)
     blocks = ((w + 3) // 4) * ((h + 3) // 4)
     if fmt == 'PF_BC7':
-        return (b'\x40' + b'\0' * 15) * blocks
+        return bc7_mode6(colour) * blocks
     if fmt == 'PF_DXT1':
+        # Punch-through transparency is the only alpha DXT1 can express.
+        require(colour == CLEAR, f'DXT1 cannot carry a translucent plate: {colour}')
         return (b'\0' * 4 + b'\xff' * 4) * blocks
     raise ValueError(f'Unsupported texture format: {fmt}')
 
@@ -67,9 +105,13 @@ def selection_pixels(width, height):
     return bytes(pixels)
 
 
-def verify_alpha(fmt, w, h, pixels):
+def verify_uniform(fmt, w, h, pixels, colour):
+    """Decode a generated payload and require every pixel to equal colour."""
+    extrema = tuple((channel, channel) for channel in colour)
     if fmt == 'PF_B8G8R8A8':
-        require(not any(pixels[3::4]), 'Unexpected visible background pixels.')
+        image = Image.frombytes('RGBA', (w, h), pixels, 'raw', 'BGRA')
+        require(image.size == (w, h), 'Decoded dimensions do not match.')
+        require(image.getextrema() == extrema, f'Background is not uniformly {colour}.')
         return
     fourcc = b'DX10' if fmt == 'PF_BC7' else b'DXT1'
     header = struct.pack('<7I', 124, 0x81007, h, w, len(pixels), 0, 1)
@@ -79,11 +121,30 @@ def verify_alpha(fmt, w, h, pixels):
         header += struct.pack('<5I', 98, 3, 0, 1, 0)
     with Image.open(BytesIO(b'DDS ' + header + pixels)) as image:
         require(image.size == (w, h), 'Decoded dimensions do not match.')
-        require(image.convert('RGBA').getchannel('A').getextrema() == (0, 0),
-                'Compressed background is not fully transparent.')
+        require(image.convert('RGBA').getextrema() == extrema,
+                f'Compressed background is not uniformly {colour}.')
+
+
+def parse_plates(overrides):
+    """Apply --plate TEXTURE=R,G,B,A settings over the built-in plate colours."""
+    plates = dict(PLATES)
+    for override in overrides:
+        name, separator, values = override.partition('=')
+        channels = values.split(',')
+        require(name and separator and len(channels) == 4,
+                f'Use --plate TEXTURE=R,G,B,A: {override}')
+        parsed = []
+        for channel in channels:
+            channel = channel.strip()
+            require(channel.isdigit() and 0 <= int(channel) <= 255,
+                    f'Plate channels must be 0-255: {override}')
+            parsed.append(int(channel))
+        plates[name] = tuple(parsed)
+    return plates
 
 
 def build(args):
+    plates = parse_plates(args.plate)
     retoc = Path(args.retoc).resolve()
     game = Path(args.game_paks).resolve()
     output = Path(args.output).resolve()
@@ -113,6 +174,10 @@ def build(args):
     require(all(p.startswith('Stalker2/Content/GameLite/FPS_Game/UIRemaster/UITextures/')
                 and '..' not in Path(p).parts and p.endswith('.uasset') for p in relative_paths),
             'Invalid target path.')
+    stems = {Path(p).stem for p in relative_paths}
+    unknown = sorted(set(plates) - stems)
+    require(not unknown, f'Plate names are not target textures: {unknown}')
+    require(ACTIVE not in plates, f'{ACTIVE} carries the generated selection marker.')
     current = work / 'current-assets'
     extraction = ['to-legacy', game, current, '--version', 'UE5_5', '--no-shaders', '--no-script-objects']
     for path in relative_paths:
@@ -124,6 +189,7 @@ def build(args):
 
     modified = work / 'modified-assets'
     records = []
+    generated = {}
     for relative in sorted(expected_paths):
         asset = current / relative
         raw = asset.with_suffix('.uexp').read_bytes()
@@ -131,12 +197,15 @@ def build(args):
         require(struct.unpack_from('<3I', raw, pos) == (0, 1, 0),
                 f'Unsupported current mip layout: {asset.name}')
         start = pos + 12
-        pixels = transparent_pixels(fmt, w, h)
         if asset.stem == ACTIVE:
             require(fmt == 'PF_B8G8R8A8', 'Active-slot format changed.')
             pixels = selection_pixels(w, h)
+            kind = 'selection'
         else:
-            verify_alpha(fmt, w, h, pixels)
+            colour = plates.get(asset.stem, CLEAR)
+            pixels = uniform_pixels(fmt, w, h, colour)
+            verify_uniform(fmt, w, h, pixels, colour)
+            kind = 'clear' if colour == CLEAR else 'plate'
         end = start + len(pixels)
         require(struct.unpack_from('<3I', raw, end) == (w, h, 1), 'Pixel payload size mismatch.')
         require(raw[end + 12:] == b'\0' * 12 + b'\xc1\x83\x2a\x9e', 'Unexpected texture trailer.')
@@ -146,7 +215,9 @@ def build(args):
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(asset, dest)
         dest.with_suffix('.uexp').write_bytes(updated)
-        records.append({'path': relative, 'export_sha256': digest(updated),
+        generated[relative] = pixels
+        records.append({'path': relative, 'export_sha256': digest(updated), 'kind': kind,
+                        'colour': None if kind == 'selection' else list(plates.get(asset.stem, CLEAR)),
                         'format': fmt, 'width': w, 'height': h, 'start': start, 'size': len(pixels)})
 
     package = work / 'package'
@@ -167,10 +238,7 @@ def build(args):
         data = (readback / item['path']).with_suffix('.uexp').read_bytes()
         require(digest(data) == item['export_sha256'], f"Read-back export changed: {item['path']}")
         pixels = data[item['start']:item['start'] + item['size']]
-        if Path(item['path']).stem == ACTIVE:
-            require(pixels == selection_pixels(item['width'], item['height']), 'Generated selection indicator changed.')
-        else:
-            verify_alpha(item['format'], item['width'], item['height'], pixels)
+        require(pixels == generated[item['path']], f"Read-back pixels changed: {item['path']}")
 
     shutil.copyfile(ROOT / 'release/INSTALL.txt', package / 'README.txt')
     names = ['README.txt'] + [f'{BASE}.{ext}' for ext in ('pak', 'utoc', 'ucas')]
@@ -181,12 +249,19 @@ def build(args):
         require(set(z.namelist()) == set(names) and z.testzip() is None, 'ZIP integrity check failed.')
         for name in names:
             require(z.read(name) == (package / name).read_bytes(), 'ZIP content changed.')
-    summary = {'version': VERSION, 'textures': len(records), 'export_roundtrip_exact': True,
+    kinds = {kind: sum(1 for item in records if item['kind'] == kind)
+             for kind in ('clear', 'plate', 'selection')}
+    summary = {'version': VERSION, 'textures': len(records), 'kinds': kinds,
+               'plates': {name: list(colour) for name, colour in sorted(plates.items())},
+               'export_roundtrip_exact': True,
                'procedural_selection_verified': True, 'external_mod_inputs': False, 'game_started': False, 'play_tested': False,
                'archive_sha256': digest(archive.read_bytes()), 'exports': records}
     (output / 'verification.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
     print(f'Built and verified: {archive}')
-    print('33 generated textures. Independent selection indicator verified. Not play-tested.')
+    print(f"{len(records)} generated textures: {kinds['clear']} cleared, {kinds['plate']} translucent plate, "
+          f"{kinds['selection']} selection marker. Not play-tested.")
+    for name, colour in sorted(plates.items()):
+        print(f'  plate {name}: RGBA {tuple(colour)}')
 
 
 if __name__ == '__main__':
@@ -194,6 +269,9 @@ if __name__ == '__main__':
     parser.add_argument('--retoc', required=True, help='Path to the separately downloaded retoc.exe')
     parser.add_argument('--game-paks', required=True, help='Installed game Stalker2/Content/Paks directory')
     parser.add_argument('--output', default='build-local', help='Local output directory; never published automatically')
+    parser.add_argument('--plate', action='append', default=[], metavar='TEXTURE=R,G,B,A',
+                        help='Replace a background with this generated colour instead of removing it, '
+                             'e.g. T_Ammo_Back_Full=216,214,206,120. Repeatable; 0,0,0,0 removes it.')
     arguments = parser.parse_args()
     try:
         build(arguments)
