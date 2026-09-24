@@ -1,4 +1,4 @@
-S2 Clear HUD 0.1.0 - S.T.A.L.K.E.R. 2 version 2.0.5
+S2 Clear HUD 0.1.1 - S.T.A.L.K.E.R. 2 version 2.0.5
 
 Free, unofficial HUD texture mod by Zayn995.
 Requires the original game. Separate from S2Tweaker.
@@ -15,13 +15,15 @@ INSTALL
 Always replace the full triplet together. To uninstall, remove those files.
 Other mods replacing the same textures can conflict.
 
-33 HUD background textures are replaced with independently generated pixels.
-The active additional slot keeps a newly generated slim amber selection marker.
+33 HUD background textures are replaced with independently generated pixels:
+31 are removed, the panel behind the ammo count becomes a faint translucent
+plate so the game's dark ammo digits stay readable, and the active additional
+slot keeps a newly generated slim amber selection marker.
 No other mod is required. No gameplay configuration changes are included.
 
-Container, paths, exact read-back exports, transparency and the generated
-selection marker were checked. NOT PLAY-TESTED: startup and rendering in the
-actual game remain unconfirmed.
+Container, paths, exact read-back exports, generated pixels and the selection
+marker were checked. NOT PLAY-TESTED: startup and rendering in the actual game
+remain unconfirmed, including how heavy the new ammo plate looks.
 
 This is fan-created content, not an official GSC Game World product.
 S.T.A.L.K.E.R. 2 and its original asset metadata belong to GSC Game World.
